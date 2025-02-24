@@ -145,22 +145,30 @@ const pineconeApi = {
     }
 };
 
-// Test Pinecone connectivity on startup
 async function testPineconeConnectivity() {
     try {
         const baseUrl = `https://${process.env.PINECONE_INDEX_NAME}.svc.${process.env.PINECONE_ENVIRONMENT}.pinecone.io`;
         console.log('Testing connectivity to Pinecone at:', baseUrl);
         
+        // Try with a more permissive HTTPS agent
+        const httpsAgent = new https.Agent({
+            rejectUnauthorized: false,
+            keepAlive: true,
+            timeout: 30000,
+            maxSockets: 5
+        });
+        
+        // Add a direct curl-like debug to see what's happening
+        console.log(`curl -v -H "Api-Key: ${process.env.PINECONE_API_KEY.substring(0, 4)}..." ${baseUrl}/describe_index_stats`);
+        
         const response = await fetch(`${baseUrl}/describe_index_stats`, {
             method: 'GET',
             headers: {
-                'Api-Key': process.env.PINECONE_API_KEY
+                'Api-Key': process.env.PINECONE_API_KEY,
+                'Accept': 'application/json'
             },
-            agent: new https.Agent({
-                rejectUnauthorized: false,
-                timeout: 10000
-            }),
-            timeout: 10000
+            agent: httpsAgent,
+            timeout: 30000
         });
         
         if (response.ok) {
@@ -170,14 +178,18 @@ async function testPineconeConnectivity() {
             return true;
         } else {
             console.error('Pinecone connectivity test failed with status:', response.status);
+            const errorText = await response.text();
+            console.error('Error details:', errorText);
             return false;
         }
     } catch (error) {
         console.error('Pinecone connectivity test failed with error:', error.message);
+        if (error.code) {
+            console.error('Error code:', error.code);
+        }
         return false;
     }
 }
-
 // Run the test on startup
 testPineconeConnectivity().then(isConnected => {
     if (!isConnected) {
