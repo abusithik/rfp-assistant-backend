@@ -29,8 +29,9 @@ const customFetch = (url, options = {}) => {
 };
 
 const pinecone = new Pinecone({
-  apiKey: process.env.PINECONE_API_KEY,
-  fetchApi: customFetch
+    apiKey: process.env.PINECONE_API_KEY,
+    environment: process.env.PINECONE_ENVIRONMENT,  // Add this line
+    fetchApi: customFetch
 });
 
 const index = pinecone.index(process.env.PINECONE_INDEX_NAME);
