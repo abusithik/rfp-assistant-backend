@@ -3,6 +3,7 @@
 console.log('Debug - Environment Variables:');
 console.log('PINECONE_API_KEY exists:', !!process.env.PINECONE_API_KEY);
 console.log('PINECONE_ENVIRONMENT exists:', !!process.env.PINECONE_ENVIRONMENT);
+console.log('PINECONE_ENVIRONMENT value:', process.env.PINECONE_ENVIRONMENT); // Add this line
 console.log('PINECONE_INDEX_NAME exists:', !!process.env.PINECONE_INDEX_NAME);
 
 const ExcelJS = require('exceljs');
