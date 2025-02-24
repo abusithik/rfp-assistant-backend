@@ -1,13 +1,22 @@
 // server/excelProcessor.js
+// Check required environment variables
+const requiredEnvVars = ['PINECONE_API_KEY', 'PINECONE_ENVIRONMENT', 'PINECONE_INDEX_NAME'];
+const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
+
+if (missingVars.length > 0) {
+    throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
+}
+
+console.log('Debug - Environment Variables:');
+console.log('PINECONE_API_KEY exists:', !!process.env.PINECONE_API_KEY);
+console.log('PINECONE_ENVIRONMENT exists:', !!process.env.PINECONE_ENVIRONMENT);
+console.log('PINECONE_ENVIRONMENT value:', process.env.PINECONE_ENVIRONMENT);
+console.log('PINECONE_INDEX_NAME exists:', !!process.env.PINECONE_INDEX_NAME);
+
 console.log('Pinecone Configuration:', {
     environment: process.env.PINECONE_ENVIRONMENT,
     indexName: process.env.PINECONE_INDEX_NAME
 });
-console.log('Debug - Environment Variables:');
-console.log('PINECONE_API_KEY exists:', !!process.env.PINECONE_API_KEY);
-console.log('PINECONE_ENVIRONMENT exists:', !!process.env.PINECONE_ENVIRONMENT);
-console.log('PINECONE_ENVIRONMENT value:', process.env.PINECONE_ENVIRONMENT); // Add this line
-console.log('PINECONE_INDEX_NAME exists:', !!process.env.PINECONE_INDEX_NAME);
 
 const ExcelJS = require('exceljs');
 const _ = require('lodash');
@@ -40,10 +49,7 @@ const customFetch = (url, options = {}) => {
 
 const pinecone = new Pinecone({
     apiKey: process.env.PINECONE_API_KEY,
-    environment: process.env.PINECONE_ENVIRONMENT,
-    // Add these options
-    baseUrl: `https://${process.env.PINECONE_INDEX_NAME}.svc.${process.env.PINECONE_ENVIRONMENT}.pinecone.io`,
-    fetchApi: customFetch
+    environment: process.env.PINECONE_ENVIRONMENT
 });
 
 const index = pinecone.index(process.env.PINECONE_INDEX_NAME);
