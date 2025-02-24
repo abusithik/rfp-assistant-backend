@@ -10,7 +10,7 @@ if (missingVars.length > 0) {
 
 // Environment variable logging
 console.log('Environment Check:');
-console.log('PINECONE_API_KEY length:', process.env.PINECONE_API_KEY?.length || 0);
+console.log('PINECONE_API_KEY exists:', !!process.env.PINECONE_API_KEY);
 console.log('PINECONE_ENVIRONMENT:', process.env.PINECONE_ENVIRONMENT);
 console.log('PINECONE_INDEX_NAME:', process.env.PINECONE_INDEX_NAME);
 
@@ -22,7 +22,6 @@ const ExcelJS = require('exceljs');
 const _ = require('lodash');
 const { Pinecone } = require('@pinecone-database/pinecone');
 const { OpenAI } = require('openai');
-const https = require('https');
 const crypto = require('crypto');
 
 // Initialize OpenAI
@@ -30,25 +29,13 @@ const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY
 });
 
-// Create custom HTTPS agent with relaxed SSL settings and keepalive
-const httpsAgent = new https.Agent({
-    keepAlive: true,
-    keepAliveMsecs: 1000,
-    maxSockets: 10,
-    rejectUnauthorized: false, // Note: Only use this in development/testing
-    timeout: 60000
+// Initialize Pinecone with ONLY the required properties
+const pinecone = new Pinecone({
+    apiKey: process.env.PINECONE_API_KEY,
+    environment: process.env.PINECONE_ENVIRONMENT
 });
 
-// Initialize Pinecone with retry logic
-const initPinecone = () => {
-    console.log('Initializing Pinecone connection...');
-    
-    return new Pinecone({
-        apiKey: process.env.PINECONE_API_KEY,
-        environment: process.env.PINECONE_ENVIRONMENT,
-        httpAgent: httpsAgent
-    });
-};
+const index = pinecone.index(process.env.PINECONE_INDEX_NAME);
 
 // Add retry logic for Pinecone operations
 const withRetry = async (operation, maxRetries = 3, delay = 1000) => {
@@ -66,9 +53,6 @@ const withRetry = async (operation, maxRetries = 3, delay = 1000) => {
         }
     }
 };
-
-const pinecone = initPinecone();
-const index = pinecone.index(process.env.PINECONE_INDEX_NAME);
 
 // Get embeddings from OpenAI
 async function getEmbedding(text) {
@@ -244,6 +228,7 @@ async function queryRFPData(question, filters = {}) {
         }
 
         // Query Pinecone with retry logic
+        console.log('Executing Pinecone query with embedding length:', queryEmbedding.length);
         const queryResponse = await withRetry(() => 
             index.query({
                 vector: queryEmbedding,
@@ -252,6 +237,16 @@ async function queryRFPData(question, filters = {}) {
                 ...(Object.keys(filterConditions).length > 0 && { filter: filterConditions })
             })
         );
+        console.log('Query response received:', !!queryResponse);
+
+        // Handle potential empty responses
+        if (!queryResponse.matches || queryResponse.matches.length === 0) {
+            console.log('No matches found in Pinecone');
+            return {
+                answer: "I couldn't find any relevant information for your question.",
+                sources: []
+            };
+        }
 
         const contexts = queryResponse.matches.map(match => ({
             text: match.metadata.text,
@@ -298,7 +293,13 @@ For RFP-specific queries:
         };
     } catch (error) {
         console.error('Error querying RFP data:', error);
-        throw error;
+        
+        // Provide a more user-friendly response on error
+        return {
+            answer: "I'm sorry, I encountered an error processing your question. Please try again or contact support if the issue persists.",
+            error: error.message,
+            sources: []
+        };
     }
 }
 
