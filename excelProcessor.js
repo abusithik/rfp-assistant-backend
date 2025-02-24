@@ -10,18 +10,16 @@ if (missingVars.length > 0) {
 
 // Environment variable logging
 console.log('Environment Check:');
-console.log('PINECONE_API_KEY exists:', !!process.env.PINECONE_API_KEY);
+console.log('PINECONE_API_KEY length:', process.env.PINECONE_API_KEY?.length || 0);
 console.log('PINECONE_ENVIRONMENT:', process.env.PINECONE_ENVIRONMENT);
 console.log('PINECONE_INDEX_NAME:', process.env.PINECONE_INDEX_NAME);
-
-// Verify Pinecone URL construction
-const constructedUrl = `https://${process.env.PINECONE_INDEX_NAME}.svc.${process.env.PINECONE_ENVIRONMENT}.pinecone.io`;
-console.log('Constructed Pinecone URL:', constructedUrl);
 
 const ExcelJS = require('exceljs');
 const _ = require('lodash');
 const { Pinecone } = require('@pinecone-database/pinecone');
 const { OpenAI } = require('openai');
+const fetch = require('node-fetch');
+const https = require('https');
 const crypto = require('crypto');
 
 // Initialize OpenAI
@@ -30,14 +28,164 @@ const openai = new OpenAI({
 });
 
 // Initialize Pinecone with ONLY the required properties
-const pinecone = new Pinecone({
-    apiKey: process.env.PINECONE_API_KEY,
-    environment: process.env.PINECONE_ENVIRONMENT
+let pineconeClient = null;
+let pineconeIndex = null;
+try {
+    pineconeClient = new Pinecone({
+        apiKey: process.env.PINECONE_API_KEY,
+        environment: process.env.PINECONE_ENVIRONMENT
+    });
+    pineconeIndex = pineconeClient.index(process.env.PINECONE_INDEX_NAME);
+    console.log('Initialized Pinecone client with SDK');
+} catch (error) {
+    console.error('Failed to initialize Pinecone client:', error.message);
+    console.log('Will fall back to direct API access');
+}
+
+// Create a custom agent with relaxed SSL verification for direct API access
+const agent = new https.Agent({
+    rejectUnauthorized: false,
+    keepAlive: true,
+    timeout: 60000
 });
 
-const index = pinecone.index(process.env.PINECONE_INDEX_NAME);
+// Direct API implementation for Pinecone
+const pineconeApi = {
+    query: async (embedding, topK = 5, filters = {}) => {
+        try {
+            const baseUrl = `https://${process.env.PINECONE_INDEX_NAME}.svc.${process.env.PINECONE_ENVIRONMENT}.pinecone.io`;
+            console.log('Querying Pinecone at URL:', baseUrl);
+            
+            const response = await fetch(`${baseUrl}/query`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Api-Key': process.env.PINECONE_API_KEY
+                },
+                body: JSON.stringify({
+                    vector: embedding,
+                    topK,
+                    includeMetadata: true,
+                    filter: Object.keys(filters).length > 0 ? filters : undefined
+                }),
+                agent,
+                timeout: 30000
+            });
+            
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Pinecone API error (${response.status}): ${errorText}`);
+            }
+            
+            return await response.json();
+        } catch (error) {
+            console.error('Pinecone API query error:', error);
+            throw error;
+        }
+    },
+    
+    upsert: async (vectors) => {
+        try {
+            const baseUrl = `https://${process.env.PINECONE_INDEX_NAME}.svc.${process.env.PINECONE_ENVIRONMENT}.pinecone.io`;
+            console.log('Upserting to Pinecone at URL:', baseUrl);
+            
+            const response = await fetch(`${baseUrl}/vectors/upsert`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Api-Key': process.env.PINECONE_API_KEY
+                },
+                body: JSON.stringify({
+                    vectors
+                }),
+                agent,
+                timeout: 30000
+            });
+            
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Pinecone API error (${response.status}): ${errorText}`);
+            }
+            
+            return await response.json();
+        } catch (error) {
+            console.error('Pinecone API upsert error:', error);
+            throw error;
+        }
+    },
+    
+    fetch: async (ids) => {
+        try {
+            const baseUrl = `https://${process.env.PINECONE_INDEX_NAME}.svc.${process.env.PINECONE_ENVIRONMENT}.pinecone.io`;
+            console.log('Fetching from Pinecone at URL:', baseUrl);
+            
+            const response = await fetch(`${baseUrl}/vectors/fetch`, {
+                method: 'POST', // Changed from GET to POST
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Api-Key': process.env.PINECONE_API_KEY
+                },
+                body: JSON.stringify({
+                    ids
+                }),
+                agent,
+                timeout: 30000
+            });
+            
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Pinecone API error (${response.status}): ${errorText}`);
+            }
+            
+            return await response.json();
+        } catch (error) {
+            console.error('Pinecone API fetch error:', error);
+            throw error;
+        }
+    }
+};
 
-// Add retry logic for Pinecone operations
+// Test Pinecone connectivity on startup
+async function testPineconeConnectivity() {
+    try {
+        const baseUrl = `https://${process.env.PINECONE_INDEX_NAME}.svc.${process.env.PINECONE_ENVIRONMENT}.pinecone.io`;
+        console.log('Testing connectivity to Pinecone at:', baseUrl);
+        
+        const response = await fetch(`${baseUrl}/describe_index_stats`, {
+            method: 'GET',
+            headers: {
+                'Api-Key': process.env.PINECONE_API_KEY
+            },
+            agent: new https.Agent({
+                rejectUnauthorized: false,
+                timeout: 10000
+            }),
+            timeout: 10000
+        });
+        
+        if (response.ok) {
+            const data = await response.json();
+            console.log('Pinecone connectivity test successful!');
+            console.log('Index stats:', JSON.stringify(data).substring(0, 200) + '...');
+            return true;
+        } else {
+            console.error('Pinecone connectivity test failed with status:', response.status);
+            return false;
+        }
+    } catch (error) {
+        console.error('Pinecone connectivity test failed with error:', error.message);
+        return false;
+    }
+}
+
+// Run the test on startup
+testPineconeConnectivity().then(isConnected => {
+    if (!isConnected) {
+        console.warn('WARNING: Unable to connect to Pinecone. The application may not work correctly.');
+    }
+});
+
+// Add retry logic for operations
 const withRetry = async (operation, maxRetries = 3, delay = 1000) => {
     for (let i = 0; i < maxRetries; i++) {
         try {
@@ -147,11 +295,16 @@ async function processExcelRFP(buffer, metadata) {
                 try {
                     const vectorId = generateStableId(metadata, item);
                     
-                    // Try to fetch existing vector with error handling
+                    // Try to fetch existing vector with error handling - Use direct API if SDK failed
                     let existingVector;
                     try {
-                        const fetchResponse = await withRetry(() => index.fetch([vectorId]));
-                        existingVector = fetchResponse.vectors || {};
+                        if (pineconeIndex) {
+                            const fetchResponse = await withRetry(() => pineconeIndex.fetch([vectorId]));
+                            existingVector = fetchResponse.vectors || {};
+                        } else {
+                            const fetchResponse = await withRetry(() => pineconeApi.fetch([vectorId]));
+                            existingVector = fetchResponse.vectors || {};
+                        }
                     } catch (fetchError) {
                         console.log(`Fetch check failed for ${vectorId}, proceeding with upsert`);
                         existingVector = {};
@@ -184,10 +337,14 @@ async function processExcelRFP(buffer, metadata) {
                 }
             }
             
-            // Upload the batch with retry logic
+            // Upload the batch with retry logic - Use direct API if SDK failed
             if (batchOperations.length > 0) {
                 try {
-                    await withRetry(() => index.upsert(batchOperations));
+                    if (pineconeIndex) {
+                        await withRetry(() => pineconeIndex.upsert(batchOperations));
+                    } else {
+                        await withRetry(() => pineconeApi.upsert(batchOperations));
+                    }
                     console.log(`Successfully uploaded batch of ${batchOperations.length} items`);
                 } catch (batchError) {
                     console.error(`Error uploading batch: ${batchError.message}`);
@@ -214,7 +371,9 @@ async function processExcelRFP(buffer, metadata) {
 
 async function queryRFPData(question, filters = {}) {
     try {
+        // Get embedding from OpenAI
         const queryEmbedding = await withRetry(() => getEmbedding(question));
+        console.log('Generated embedding with length:', queryEmbedding.length);
 
         // Prepare filter conditions
         let filterConditions = {};
@@ -227,27 +386,52 @@ async function queryRFPData(question, filters = {}) {
             };
         }
 
-        // Query Pinecone with retry logic
-        console.log('Executing Pinecone query with embedding length:', queryEmbedding.length);
-        const queryResponse = await withRetry(() => 
-            index.query({
-                vector: queryEmbedding,
-                topK: 5,
-                includeMetadata: true,
-                ...(Object.keys(filterConditions).length > 0 && { filter: filterConditions })
-            })
-        );
+        // Try SDK first, fall back to direct API
+        let queryResponse;
+        try {
+            if (pineconeIndex) {
+                console.log('Querying Pinecone using SDK...');
+                queryResponse = await withRetry(() => 
+                    pineconeIndex.query({
+                        vector: queryEmbedding,
+                        topK: 5,
+                        includeMetadata: true,
+                        ...(Object.keys(filterConditions).length > 0 && { filter: filterConditions })
+                    })
+                );
+            } else {
+                throw new Error('SDK not initialized, using direct API');
+            }
+        } catch (sdkError) {
+            console.log('SDK query failed, falling back to direct API:', sdkError.message);
+            queryResponse = await withRetry(() => 
+                pineconeApi.query(queryEmbedding, 5, filterConditions)
+            );
+        }
+        
         console.log('Query response received:', !!queryResponse);
 
         // Handle potential empty responses
         if (!queryResponse.matches || queryResponse.matches.length === 0) {
             console.log('No matches found in Pinecone');
+            
+            // If this is a greeting or general question, respond appropriately
+            if (question.toLowerCase().includes('hi') || 
+                question.toLowerCase().includes('hello') || 
+                question.toLowerCase().includes('hey')) {
+                return {
+                    answer: "Hello! I'm your RFP Assistant. I can help you find information in your RFP documents. How can I assist you today?",
+                    sources: []
+                };
+            }
+            
             return {
-                answer: "I couldn't find any relevant information for your question.",
+                answer: "I couldn't find any relevant information for your question in the RFP documents. Could you try rephrasing your question or ask about a different aspect of the RFP?",
                 sources: []
             };
         }
 
+        // If we have a valid response with matches
         const contexts = queryResponse.matches.map(match => ({
             text: match.metadata.text,
             originalData: JSON.parse(match.metadata.originalData),
@@ -256,7 +440,7 @@ async function queryRFPData(question, filters = {}) {
             similarity: match.score
         }));
 
-        // Generate response using OpenAI with retry logic
+        // Generate response using OpenAI
         const completion = await withRetry(() =>
             openai.chat.completions.create({
                 model: "gpt-4",
@@ -294,9 +478,19 @@ For RFP-specific queries:
     } catch (error) {
         console.error('Error querying RFP data:', error);
         
-        // Provide a more user-friendly response on error
+        // Special handling for greeting messages even if there's an error
+        if (question.toLowerCase().includes('hi') || 
+            question.toLowerCase().includes('hello') || 
+            question.toLowerCase().includes('hey')) {
+            return {
+                answer: "Hello! I'm your RFP Assistant. I can help you find information in your RFP documents. How can I assist you today?",
+                sources: []
+            };
+        }
+        
+        // Provide a graceful fallback response
         return {
-            answer: "I'm sorry, I encountered an error processing your question. Please try again or contact support if the issue persists.",
+            answer: "I'm here to help with your RFP questions, but I'm having trouble connecting to my database right now. Could you please try again in a moment?",
             error: error.message,
             sources: []
         };
