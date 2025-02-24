@@ -1,5 +1,8 @@
 // server/excelProcessor.js
-
+console.log('Pinecone Configuration:', {
+    environment: process.env.PINECONE_ENVIRONMENT,
+    indexName: process.env.PINECONE_INDEX_NAME
+});
 console.log('Debug - Environment Variables:');
 console.log('PINECONE_API_KEY exists:', !!process.env.PINECONE_API_KEY);
 console.log('PINECONE_ENVIRONMENT exists:', !!process.env.PINECONE_ENVIRONMENT);
@@ -18,20 +21,28 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
-// Custom fetch configuration
+// Update customFetch configuration
 const customFetch = (url, options = {}) => {
-  return fetch(url, {
-    ...options,
-    agent: new https.Agent({
-      rejectUnauthorized: false
-    }),
-    timeout: 60000
-  });
+    return fetch(url, {
+        ...options,
+        agent: new https.Agent({
+            rejectUnauthorized: false,
+            keepAlive: true,
+            timeout: 60000
+        }),
+        timeout: 60000,
+        headers: {
+            ...options.headers,
+            'Api-Key': process.env.PINECONE_API_KEY
+        }
+    });
 };
 
 const pinecone = new Pinecone({
     apiKey: process.env.PINECONE_API_KEY,
-    environment: process.env.PINECONE_ENVIRONMENT,  // Add this line
+    environment: process.env.PINECONE_ENVIRONMENT,
+    // Add these options
+    baseUrl: `https://${process.env.PINECONE_INDEX_NAME}.svc.${process.env.PINECONE_ENVIRONMENT}.pinecone.io`,
     fetchApi: customFetch
 });
 
