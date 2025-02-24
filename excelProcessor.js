@@ -1,258 +1,274 @@
 // server/excelProcessor.js
+
 // Check required environment variables
-const requiredEnvVars = ['PINECONE_API_KEY', 'PINECONE_ENVIRONMENT', 'PINECONE_INDEX_NAME'];
+const requiredEnvVars = ['PINECONE_API_KEY', 'PINECONE_ENVIRONMENT', 'PINECONE_INDEX_NAME', 'OPENAI_API_KEY'];
 const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
 
 if (missingVars.length > 0) {
     throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
 }
 
-console.log('Debug - Environment Variables:');
-console.log('PINECONE_API_KEY exists:', !!process.env.PINECONE_API_KEY);
-console.log('PINECONE_ENVIRONMENT exists:', !!process.env.PINECONE_ENVIRONMENT);
-console.log('PINECONE_ENVIRONMENT value:', process.env.PINECONE_ENVIRONMENT);
-console.log('PINECONE_INDEX_NAME exists:', !!process.env.PINECONE_INDEX_NAME);
+// Environment variable logging
+console.log('Environment Check:');
+console.log('PINECONE_API_KEY length:', process.env.PINECONE_API_KEY?.length || 0);
+console.log('PINECONE_ENVIRONMENT:', process.env.PINECONE_ENVIRONMENT);
+console.log('PINECONE_INDEX_NAME:', process.env.PINECONE_INDEX_NAME);
 
-console.log('Pinecone Configuration:', {
-    environment: process.env.PINECONE_ENVIRONMENT,
-    indexName: process.env.PINECONE_INDEX_NAME
-});
+// Verify Pinecone URL construction
+const constructedUrl = `https://${process.env.PINECONE_INDEX_NAME}.svc.${process.env.PINECONE_ENVIRONMENT}.pinecone.io`;
+console.log('Constructed Pinecone URL:', constructedUrl);
 
 const ExcelJS = require('exceljs');
 const _ = require('lodash');
 const { Pinecone } = require('@pinecone-database/pinecone');
 const { OpenAI } = require('openai');
-const fetch = require('node-fetch');
 const https = require('https');
 const crypto = require('crypto');
 
+// Initialize OpenAI
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
+    apiKey: process.env.OPENAI_API_KEY
 });
 
-// Update customFetch configuration
-const customFetch = (url, options = {}) => {
-    return fetch(url, {
-        ...options,
-        agent: new https.Agent({
-            rejectUnauthorized: false,
-            keepAlive: true,
-            timeout: 60000
-        }),
-        timeout: 60000,
-        headers: {
-            ...options.headers,
-            'Api-Key': process.env.PINECONE_API_KEY
-        }
+// Create custom HTTPS agent with relaxed SSL settings and keepalive
+const httpsAgent = new https.Agent({
+    keepAlive: true,
+    keepAliveMsecs: 1000,
+    maxSockets: 10,
+    rejectUnauthorized: false, // Note: Only use this in development/testing
+    timeout: 60000
+});
+
+// Initialize Pinecone with retry logic
+const initPinecone = () => {
+    console.log('Initializing Pinecone connection...');
+    
+    return new Pinecone({
+        apiKey: process.env.PINECONE_API_KEY,
+        environment: process.env.PINECONE_ENVIRONMENT,
+        httpAgent: httpsAgent
     });
 };
 
-const pinecone = new Pinecone({
-    apiKey: process.env.PINECONE_API_KEY,
-    environment: process.env.PINECONE_ENVIRONMENT
-});
+// Add retry logic for Pinecone operations
+const withRetry = async (operation, maxRetries = 3, delay = 1000) => {
+    for (let i = 0; i < maxRetries; i++) {
+        try {
+            return await operation();
+        } catch (error) {
+            if (i === maxRetries - 1) throw error;
+            
+            console.log(`Operation failed, attempt ${i + 1}/${maxRetries}. Retrying in ${delay}ms...`);
+            console.error('Error:', error.message);
+            
+            await new Promise(resolve => setTimeout(resolve, delay));
+            delay *= 2; // Exponential backoff
+        }
+    }
+};
 
+const pinecone = initPinecone();
 const index = pinecone.index(process.env.PINECONE_INDEX_NAME);
 
+// Get embeddings from OpenAI
 async function getEmbedding(text) {
-  const response = await openai.embeddings.create({
-    model: "text-embedding-ada-002",
-    input: text,
-  });
-  return response.data[0].embedding;
+    const response = await openai.embeddings.create({
+        model: "text-embedding-ada-002",
+        input: text,
+    });
+    return response.data[0].embedding;
 }
 
 // Generate a stable, unique ID for a piece of content
 function generateStableId(metadata, item) {
-  const content = `${metadata.rfpId}-${item.sheetName}-${item.category}-${item.text.slice(0, 50)}`;
-  return crypto.createHash('md5').update(content).digest('hex');
+    const content = `${metadata.rfpId}-${item.sheetName}-${item.category}-${item.text.slice(0, 50)}`;
+    return crypto.createHash('md5').update(content).digest('hex');
 }
 
 async function processExcelRFP(buffer, metadata) {
-  try {
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(buffer);
+    try {
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.load(buffer);
 
-    const processedData = [];
-    let totalRows = 0;
-    let processedRows = 0;
-    let skippedRows = 0;
-    let errorRows = 0;
+        const processedData = [];
+        let totalRows = 0;
+        let processedRows = 0;
+        let skippedRows = 0;
+        let errorRows = 0;
 
-    // Process each worksheet
-    for (const worksheet of workbook.worksheets) {
-      console.log(`Processing worksheet: ${worksheet.name}`);
-      const sheetName = worksheet.name;
-      const jsonData = [];
+        // Process each worksheet
+        for (const worksheet of workbook.worksheets) {
+            console.log(`Processing worksheet: ${worksheet.name}`);
+            const sheetName = worksheet.name;
+            const jsonData = [];
 
-      // Get headers and clean them
-      const headers = worksheet.getRow(1).values
-        .slice(1) // Skip first empty cell
-        .map(header => header ? header.trim() : '');
+            // Get headers and clean them
+            const headers = worksheet.getRow(1).values
+                .slice(1) // Skip first empty cell
+                .map(header => header ? header.trim() : '');
 
-      // Count total rows
-      totalRows += worksheet.rowCount - 1; // Exclude header row
+            // Count total rows
+            totalRows += worksheet.rowCount - 1; // Exclude header row
 
-      // Process each row
-      worksheet.eachRow((row, rowNumber) => {
-        if (rowNumber > 1) { // Skip header row
-          const rowData = {};
-          row.eachCell((cell, colNumber) => {
-            const header = headers[colNumber - 1];
-            if (header) { // Only process cells with valid headers
-              rowData[header] = cell.text.trim();
+            // Process each row
+            worksheet.eachRow((row, rowNumber) => {
+                if (rowNumber > 1) { // Skip header row
+                    const rowData = {};
+                    row.eachCell((cell, colNumber) => {
+                        const header = headers[colNumber - 1];
+                        if (header) { // Only process cells with valid headers
+                            rowData[header] = cell.text.trim();
+                        }
+                    });
+                    if (Object.keys(rowData).length > 0) {
+                        jsonData.push(rowData);
+                    }
+                }
+            });
+
+            // Group data by category if available
+            const groupedData = _.groupBy(jsonData, 'Category');
+
+            // Process each category
+            for (const [category, items] of Object.entries(groupedData)) {
+                for (const item of items) {
+                    const combinedText = Object.entries(item)
+                        .filter(([key, value]) => value && typeof value === 'string')
+                        .map(([key, value]) => `${key}: ${value}`)
+                        .join('\n');
+
+                    if (combinedText.trim()) {
+                        processedData.push({
+                            category: category || 'uncategorized',
+                            sheetName,
+                            text: combinedText,
+                            originalData: item
+                        });
+                    }
+                }
             }
-          });
-          if (Object.keys(rowData).length > 0) {
-            jsonData.push(rowData);
-          }
         }
-      });
 
-      // Group data by category if available
-      const groupedData = _.groupBy(jsonData, 'Category');
-
-      // Process each category
-      for (const [category, items] of Object.entries(groupedData)) {
-        for (const item of items) {
-          const combinedText = Object.entries(item)
-            .filter(([key, value]) => value && typeof value === 'string')
-            .map(([key, value]) => `${key}: ${value}`)
-            .join('\n');
-
-          if (combinedText.trim()) {
-            processedData.push({
-              category: category || 'uncategorized',
-              sheetName,
-              text: combinedText,
-              originalData: item
-            });
-          }
-        }
-      }
-    }
-
-    // Store in Pinecone with error handling, duplicate prevention, and batching
-    console.log(`Total items to process: ${processedData.length}`);
-    
-    // Process in batches of 10
-    const BATCH_SIZE = 10;
-    const batches = _.chunk(processedData, BATCH_SIZE);
-    
-    for (const batch of batches) {
-      const batchOperations = [];
-      
-      for (const item of batch) {
-        try {
-          const vectorId = generateStableId(metadata, item);
-          
-          // Try to fetch existing vector with error handling
-          let existingVector;
-          try {
-            const fetchResponse = await index.fetch([vectorId]);
-            existingVector = fetchResponse.vectors || {};
-          } catch (fetchError) {
-            console.log(`Fetch check failed for ${vectorId}, proceeding with upsert`);
-            existingVector = {};
-          }
-          
-          if (!existingVector[vectorId]) {
-            const embedding = await getEmbedding(item.text);
+        // Store in Pinecone with error handling, duplicate prevention, and batching
+        console.log(`Total items to process: ${processedData.length}`);
+        
+        // Process in batches of 10
+        const BATCH_SIZE = 10;
+        const batches = _.chunk(processedData, BATCH_SIZE);
+        
+        for (const batch of batches) {
+            const batchOperations = [];
             
-            batchOperations.push({
-              id: vectorId,
-              values: embedding,
-              metadata: {
-                ...metadata,
-                category: item.category,
-                sheetName: item.sheetName,
-                text: item.text,
-                originalData: JSON.stringify(item.originalData)
-              }
-            });
-            processedRows++;
-            console.log(`Prepared item ${processedRows}/${processedData.length} from ${item.sheetName}`);
-          } else {
-            skippedRows++;
-            console.log(`Skipping duplicate entry (${skippedRows} skipped so far)`);
-          }
-        } catch (error) {
-          errorRows++;
-          console.error(`Error preparing item (${errorRows} errors so far):`, error.message);
-          continue; // Continue with next item even if this one fails
+            for (const item of batch) {
+                try {
+                    const vectorId = generateStableId(metadata, item);
+                    
+                    // Try to fetch existing vector with error handling
+                    let existingVector;
+                    try {
+                        const fetchResponse = await withRetry(() => index.fetch([vectorId]));
+                        existingVector = fetchResponse.vectors || {};
+                    } catch (fetchError) {
+                        console.log(`Fetch check failed for ${vectorId}, proceeding with upsert`);
+                        existingVector = {};
+                    }
+                    
+                    if (!existingVector[vectorId]) {
+                        const embedding = await withRetry(() => getEmbedding(item.text));
+                        
+                        batchOperations.push({
+                            id: vectorId,
+                            values: embedding,
+                            metadata: {
+                                ...metadata,
+                                category: item.category,
+                                sheetName: item.sheetName,
+                                text: item.text,
+                                originalData: JSON.stringify(item.originalData)
+                            }
+                        });
+                        processedRows++;
+                        console.log(`Prepared item ${processedRows}/${processedData.length} from ${item.sheetName}`);
+                    } else {
+                        skippedRows++;
+                        console.log(`Skipping duplicate entry (${skippedRows} skipped so far)`);
+                    }
+                } catch (error) {
+                    errorRows++;
+                    console.error(`Error preparing item (${errorRows} errors so far):`, error.message);
+                    continue;
+                }
+            }
+            
+            // Upload the batch with retry logic
+            if (batchOperations.length > 0) {
+                try {
+                    await withRetry(() => index.upsert(batchOperations));
+                    console.log(`Successfully uploaded batch of ${batchOperations.length} items`);
+                } catch (batchError) {
+                    console.error(`Error uploading batch: ${batchError.message}`);
+                    errorRows += batchOperations.length;
+                }
+            }
         }
-      }
-      
-      // Upload the batch
-      if (batchOperations.length > 0) {
-        try {
-          await index.upsert(batchOperations);
-          console.log(`Successfully uploaded batch of ${batchOperations.length} items`);
-        } catch (batchError) {
-          console.error(`Error uploading batch: ${batchError.message}`);
-          errorRows += batchOperations.length;
-          // Could implement retry logic here if needed
-        }
-      }
-    }
 
-    return {
-      success: true,
-      stats: {
-        totalItems: processedData.length,
-        processed: processedRows,
-        skipped: skippedRows,
-        errors: errorRows
-      },
-      sheets: workbook.worksheets.map(sheet => sheet.name)
-    };
-  } catch (error) {
-    console.error('Error processing Excel file:', error);
-    throw error;
-  }
+        return {
+            success: true,
+            stats: {
+                totalItems: processedData.length,
+                processed: processedRows,
+                skipped: skippedRows,
+                errors: errorRows
+            },
+            sheets: workbook.worksheets.map(sheet => sheet.name)
+        };
+    } catch (error) {
+        console.error('Error processing Excel file:', error);
+        throw error;
+    }
 }
 
 async function queryRFPData(question, filters = {}) {
-  try {
-    const queryEmbedding = await getEmbedding(question);
+    try {
+        const queryEmbedding = await withRetry(() => getEmbedding(question));
 
-    // Prepare filter conditions - add a default filter if none provided
-    let filterConditions = {};
-    if (Object.keys(filters).length > 0) {
-      // Use provided filters
-      if (filters.category) filterConditions.category = filters.category;
-      if (filters.sheetName) filterConditions.sheetName = filters.sheetName;
-    } else {
-      // Add a default filter - filter for any non-null category
-      filterConditions = {
-        category: { $exists: true }
-      };
-    }
+        // Prepare filter conditions
+        let filterConditions = {};
+        if (Object.keys(filters).length > 0) {
+            if (filters.category) filterConditions.category = filters.category;
+            if (filters.sheetName) filterConditions.sheetName = filters.sheetName;
+        } else {
+            filterConditions = {
+                category: { $exists: true }
+            };
+        }
 
-    // Query Pinecone with query parameters
-    const queryResponse = await index.query({
-      vector: queryEmbedding,
-      topK: 5,
-      includeMetadata: true,
-      ...(Object.keys(filterConditions).length > 0 && { filter: filterConditions })
-    });
+        // Query Pinecone with retry logic
+        const queryResponse = await withRetry(() => 
+            index.query({
+                vector: queryEmbedding,
+                topK: 5,
+                includeMetadata: true,
+                ...(Object.keys(filterConditions).length > 0 && { filter: filterConditions })
+            })
+        );
 
-    // Process and format results
-    const contexts = queryResponse.matches.map(match => ({
-      text: match.metadata.text,
-      originalData: JSON.parse(match.metadata.originalData),
-      category: match.metadata.category,
-      sheetName: match.metadata.sheetName,
-      similarity: match.score
-    }));
+        const contexts = queryResponse.matches.map(match => ({
+            text: match.metadata.text,
+            originalData: JSON.parse(match.metadata.originalData),
+            category: match.metadata.category,
+            sheetName: match.metadata.sheetName,
+            similarity: match.score
+        }));
 
-    // Generate response using OpenAI
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4",
-      messages: [
-        {
-          role: "system",
-          content: `You are an RFP assistant specialized in analyzing historical RFP data
+        // Generate response using OpenAI with retry logic
+        const completion = await withRetry(() =>
+            openai.chat.completions.create({
+                model: "gpt-4",
+                messages: [
+                    {
+                        role: "system",
+                        content: `You are an RFP assistant specialized in analyzing historical RFP data
 
 For general queries and greetings:
 - Respond in a friendly, professional manner
@@ -265,27 +281,28 @@ For RFP-specific queries:
 - Highlight key information and requirements
 - Always maintain a professional yet friendly tone
 - If the question is not RFP-related, engage appropriately while gently guiding the conversation toward RFP topics`
-        },
-        {
-          role: "user",
-          content: `Context from RFP data:\n${contexts.map(c => 
-            `[Sheet: ${c.sheetName}, Category: ${c.category}]\n${c.text}`
-          ).join('\n\n')}\n\nQuestion: ${question}`
-        }
-      ]
-    });
+                    },
+                    {
+                        role: "user",
+                        content: `Context from RFP data:\n${contexts.map(c => 
+                            `[Sheet: ${c.sheetName}, Category: ${c.category}]\n${c.text}`
+                        ).join('\n\n')}\n\nQuestion: ${question}`
+                    }
+                ]
+            })
+        );
 
-    return {
-      answer: completion.choices[0].message.content,
-      sources: contexts
-    };
-  } catch (error) {
-    console.error('Error querying RFP data:', error);
-    throw error;
-  }
+        return {
+            answer: completion.choices[0].message.content,
+            sources: contexts
+        };
+    } catch (error) {
+        console.error('Error querying RFP data:', error);
+        throw error;
+    }
 }
 
 module.exports = {
-  processExcelRFP,
-  queryRFPData
+    processExcelRFP,
+    queryRFPData
 };
