@@ -22,7 +22,7 @@ const app = express();
 // Configure CORS
 // In production, replace with your actual Render URL
 const FRONTEND_URL = process.env.NODE_ENV === 'production' 
-  ? 'https://your-render-frontend-url.onrender.com'
+  ? 'https://rfp-assistant-frontend.onrender.com'
   : 'http://localhost:3000';
 
 app.use(cors({
