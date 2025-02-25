@@ -13,6 +13,7 @@ console.log('Environment Check:');
 console.log('PINECONE_API_KEY exists:', !!process.env.PINECONE_API_KEY);
 console.log('PINECONE_ENVIRONMENT:', process.env.PINECONE_ENVIRONMENT);
 console.log('PINECONE_INDEX_NAME:', process.env.PINECONE_INDEX_NAME);
+console.log('PINECONE_HOST exists:', !!process.env.PINECONE_HOST);
 console.log('OPENAI_API_KEY exists:', !!process.env.OPENAI_API_KEY);
 
 const ExcelJS = require('exceljs');
@@ -34,11 +35,25 @@ const httpsAgent = new https.Agent({
     timeout: 60000
 });
 
+// Set up Pinecone base URL - prioritize direct host if available
+const getPineconeBaseUrl = () => {
+    if (process.env.PINECONE_HOST) {
+        // If PINECONE_HOST includes the protocol, use it as is
+        if (process.env.PINECONE_HOST.startsWith('http')) {
+            return process.env.PINECONE_HOST;
+        }
+        // Otherwise, add the https:// prefix
+        return `https://${process.env.PINECONE_HOST}`;
+    }
+    // Fall back to constructing the URL from environment and index name
+    return `https://${process.env.PINECONE_INDEX_NAME}.svc.${process.env.PINECONE_ENVIRONMENT}.pinecone.io`;
+};
+
 // Direct API implementation for Pinecone
 const pineconeApi = {
     query: async (embedding, topK = 5, filters = {}) => {
         try {
-            const baseUrl = `https://${process.env.PINECONE_INDEX_NAME}.svc.${process.env.PINECONE_ENVIRONMENT}.pinecone.io`;
+            const baseUrl = getPineconeBaseUrl();
             console.log('Querying Pinecone at URL:', baseUrl);
             
             const response = await fetch(`${baseUrl}/query`, {
@@ -71,7 +86,7 @@ const pineconeApi = {
     
     upsert: async (vectors) => {
         try {
-            const baseUrl = `https://${process.env.PINECONE_INDEX_NAME}.svc.${process.env.PINECONE_ENVIRONMENT}.pinecone.io`;
+            const baseUrl = getPineconeBaseUrl();
             console.log('Upserting to Pinecone at URL:', baseUrl);
             
             const response = await fetch(`${baseUrl}/vectors/upsert`, {
@@ -101,7 +116,7 @@ const pineconeApi = {
     
     fetch: async (ids) => {
         try {
-            const baseUrl = `https://${process.env.PINECONE_INDEX_NAME}.svc.${process.env.PINECONE_ENVIRONMENT}.pinecone.io`;
+            const baseUrl = getPineconeBaseUrl();
             console.log('Fetching from Pinecone at URL:', baseUrl);
             
             const response = await fetch(`${baseUrl}/vectors/fetch`, {
@@ -131,7 +146,7 @@ const pineconeApi = {
 
     testConnectivity: async () => {
         try {
-            const baseUrl = `https://${process.env.PINECONE_INDEX_NAME}.svc.${process.env.PINECONE_ENVIRONMENT}.pinecone.io`;
+            const baseUrl = getPineconeBaseUrl();
             console.log('Testing connectivity to Pinecone at:', baseUrl);
             
             const response = await fetch(`${baseUrl}/describe_index_stats`, {
