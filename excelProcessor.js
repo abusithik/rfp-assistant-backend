@@ -440,14 +440,28 @@ async function queryRFPData(question, filters = {}) {
             };
         }
 
-        // Process the matches
-        const contexts = queryResponse.matches.map(match => ({
-            text: match.metadata.text,
-            originalData: JSON.parse(match.metadata.originalData),
-            category: match.metadata.category,
-            sheetName: match.metadata.sheetName,
-            similarity: match.score
-        }));
+        // Process the matches - FIX: Add error handling for JSON parsing
+        const contexts = queryResponse.matches.map(match => {
+            // Safe JSON parsing with error handling
+            let parsedOriginalData = {};
+            try {
+                // Only attempt to parse if originalData exists and is a string
+                if (match.metadata.originalData && typeof match.metadata.originalData === 'string') {
+                    parsedOriginalData = JSON.parse(match.metadata.originalData);
+                }
+            } catch (error) {
+                console.warn(`Error parsing originalData for match: ${error.message}`);
+                // Continue with empty object if parsing fails
+            }
+            
+            return {
+                text: match.metadata.text || '',
+                originalData: parsedOriginalData,
+                category: match.metadata.category || 'unknown',
+                sheetName: match.metadata.sheetName || 'unknown',
+                similarity: match.score
+            };
+        });
 
         // Generate response using OpenAI
         const completion = await withRetry(() =>
