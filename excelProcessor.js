@@ -492,11 +492,14 @@ For RFP-specific queries:
 - Ask for clarification when a question could have multiple interpretations
 
 Response structure:
-- Start with a direct answer to the main question
-- Provide supporting details and context as needed
-- Organize complex information using headings, bullet points, or numbered lists
-- Include relevant examples when helpful
-- End with source attribution in footer format when appropriate
+- Begin with a direct answer to the main question in 1-2 sentences
+- Provide a "Details" section with supporting information using bullet points or short paragraphs
+- For complex answers, use appropriate headers to organize information
+- When applicable, include a brief "Example" section
+- End all responses with:
+   
+   ---
+   [Source: {document name/ID}]
 
 Remember: Brevity is priority. Use minimal words to convey exact information.`
                     },
